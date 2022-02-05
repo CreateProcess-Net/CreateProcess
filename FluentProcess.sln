@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Process", "Process\Process.csproj", "{CE38E453-0581-4955-9495-276EF5AA1620}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProcessTests", "ProcessTests\ProcessTests.csproj", "{600545CC-4E1B-4477-9763-AF7F42CBF88E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{CE38E453-0581-4955-9495-276EF5AA1620}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CE38E453-0581-4955-9495-276EF5AA1620}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CE38E453-0581-4955-9495-276EF5AA1620}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CE38E453-0581-4955-9495-276EF5AA1620}.Release|Any CPU.Build.0 = Release|Any CPU
+		{600545CC-4E1B-4477-9763-AF7F42CBF88E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{600545CC-4E1B-4477-9763-AF7F42CBF88E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{600545CC-4E1B-4477-9763-AF7F42CBF88E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{600545CC-4E1B-4477-9763-AF7F42CBF88E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
