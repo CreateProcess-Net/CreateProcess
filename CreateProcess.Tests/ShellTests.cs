@@ -1,8 +1,19 @@
-# CreateProcess - A simple and powerful Process library for C#
+using System.IO;
+using System.Net.NetworkInformation;
+using System.Reactive;
+using System.Threading.Tasks;
+using NUnit.Framework;
+using CreateProcess;
 
-## Examples
+namespace CreateProcess.Tests;
 
-```c#
+public class Tests
+{
+    [SetUp]
+    public void Setup()
+    {
+    }
+
     [Test]
     public void RedirectToFile()
     {
@@ -80,6 +91,30 @@
         Assert.AreEqual("test single argument\n", File.ReadAllText("other.txt"));
     }
     
+    //[Test]
+    //public async Task RedirectErrorToOutput()
+    //{
+    //    var shell = new ProcessShell();
+    //    await shell.RunAsync(
+    //        CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "echo test 2>&1")
+    //        > Redirect.Output.ToFile("test.txt", true)
+    //        > Redirect.Error.ToStandardOutput
+    //    );
+    //    Assert.AreEqual("test", await File.ReadAllTextAsync("test.txt"));
+    //}
+    //
+    //[Test]
+    //public async Task RedirectErrorToOutputReverse()
+    //{
+    //    var shell = new ProcessShell();
+    //    await shell.RunAsync(
+    //        CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "echo test 2>&1")
+    //        > Redirect.Error.ToStandardOutput
+    //        > Redirect.Output.ToFile("test.txt", true)
+    //    );
+    //    Assert.AreEqual("test", await File.ReadAllTextAsync("test.txt"));
+    //}
+    
     [Test]
     public void ExitCodeThrows()
     {
@@ -127,30 +162,4 @@
             == 2
         );
     }
-```
-
-## Why?
-
-- I'm the creator of the rock solid foundation used by the [FAKE](https://fake.build)-Build system
-- I always wanted to build a simple layer on top of the `CreateProcess` API in FAKE.
-- The API is now C# first as C# has imho caught up with F#
-- Fully unit-testable API
-- Design the API to be as typed and as composable as possible
-
-
-## Alternatives
-
-- https://github.com/madelson/MedallionShell - Another well designed general purpose library
-- https://github.com/Tyrrrz/CliWrap - Very powerful/good abstractions. If you are doing shell work this one might be worth a look.
-- https://github.com/mayuki/Chell - Again shell-based, if you do shell work take a look.
-- https://github.com/Cysharp/ProcessX - A bit limited in what you can do
-- https://github.com/jamesmanning/RunProcessAsTask - also quite limited
-- https://github.com/twitchax/Sheller
-
-By the way the libraries are not mutually exclusive. For example you could use the argument API from `CreateProcess` combined with `CliWrap`.
-In particular `CreateProcess` offers:
-
-- Argument Serialization and Parsing
-- Utils for resolving files from PATH
-- Process creation
-- Combinators for process results (to get typed again)
+}

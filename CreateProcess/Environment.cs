@@ -1,6 +1,6 @@
-﻿namespace Process;
+﻿namespace CreateProcess;
 
-public class Environment
+internal class Environment
 {
     public static bool isLinux { get; } =
         System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(

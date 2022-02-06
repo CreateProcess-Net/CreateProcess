@@ -1,5 +1,5 @@
-﻿namespace Process;
-
+﻿namespace CreateProcess;
+/*
 public static class StreamExtensions
 {
     public static Stream CombineWrite(this Stream target1, Stream target2)
@@ -195,3 +195,4 @@ internal static class InternalStreams
 {
     // https://github.com/fsprojects/FAKE/blob/release/next/src/app/Fake.Core.Process/InternalStreams.fs#L93
 }
+*/

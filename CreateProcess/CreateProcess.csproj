@@ -4,11 +4,22 @@
         <TargetFramework>net6.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <Version>0.1.0</Version>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
     </PropertyGroup>
 
     <ItemGroup>
       <PackageReference Include="System.IO.Pipelines" Version="6.0.1" />
       <PackageReference Include="System.Reactive" Version="5.0.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Content Include="..\Readme.md">
+        <Link>Readme.md</Link>
+      </Content>
+      <Content Include="..\ReleaseNotes.md">
+        <Link>ReleaseNotes.md</Link>
+      </Content>
     </ItemGroup>
 
 </Project>

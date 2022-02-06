@@ -1,8 +1,8 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Process", "Process\Process.csproj", "{CE38E453-0581-4955-9495-276EF5AA1620}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CreateProcess", "CreateProcess\CreateProcess.csproj", "{CE38E453-0581-4955-9495-276EF5AA1620}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProcessTests", "ProcessTests\ProcessTests.csproj", "{600545CC-4E1B-4477-9763-AF7F42CBF88E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CreateProcess.Tests", "CreateProcess.Tests\CreateProcess.Tests.csproj", "{600545CC-4E1B-4477-9763-AF7F42CBF88E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
