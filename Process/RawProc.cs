@@ -1,5 +1,6 @@
 ﻿using System.Collections.Immutable;
 using System.Diagnostics;
+using System.IO.Pipelines;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using System.Reflection.Metadata;
@@ -183,55 +184,204 @@ public static class DataRef
     }
 }*/
 
-public record Pipe(System.IO.Pipelines.Pipe SystemPipe, Func<CancellationToken, Task> WorkLoop);
 
+internal abstract record OutputPipe
+{
+    private OutputPipe(){}
+    internal abstract System.IO.Pipelines.PipeWriter SystemPipe { get; }
+    internal abstract Func<CancellationToken, Task> WorkLoop { get; }
+
+    internal record SimplePipe(System.IO.Pipelines.PipeWriter SystemPipe, Func<CancellationToken, Task> WorkLoop) : OutputPipe
+    {
+        internal override System.IO.Pipelines.PipeWriter SystemPipe { get; } = SystemPipe;
+        internal override Func<CancellationToken, Task> WorkLoop { get; } = WorkLoop;
+    }
+    
+    internal record MergedPipe(IReadOnlyList<OutputPipe> Pipes) : OutputPipe
+    {
+        private System.IO.Pipelines.Pipe? _pipe;
+        private IReadOnlyList<OutputPipe> Pipes { get; } = Flatten(Pipes);
+
+        private static IReadOnlyList<OutputPipe> Flatten(IReadOnlyList<OutputPipe> pipes)
+        {
+            var l = new List<OutputPipe>(pipes.Count);
+            foreach (var pipe in pipes)
+            {
+                if (pipe is MergedPipe mergedPipe)
+                {
+                    l.AddRange(mergedPipe.Pipes);
+                }
+                else
+                {
+                    l.Add(pipe);
+                }
+            }
+
+            return l;
+        }
+
+        private System.IO.Pipelines.Pipe EnsurePipe => _pipe ??= new System.IO.Pipelines.Pipe();
+
+        internal override System.IO.Pipelines.PipeWriter SystemPipe
+        {
+            get { return EnsurePipe.Writer; }
+        }
+
+        internal override Func<CancellationToken, Task> WorkLoop
+        {
+            get
+            {
+                return async (ctx) =>
+                {
+                    var workLoops = new List<Task>(Pipes.Count);
+                    workLoops.AddRange(Pipes.Select(p => p.WorkLoop(ctx)));
+                    
+                    var reader = EnsurePipe.Reader;
+                    
+                    try
+                    {
+                        while (true)
+                        {
+                            var result = await reader.ReadAsync(ctx).ConfigureAwait(false);
+                            var buffer = result.Buffer;
+                            var position = buffer.Start;
+                            var consumed = position;
+
+                            try
+                            {
+                                if (result.IsCanceled)
+                                {
+                                    throw new OperationCanceledException("Read has been cancelled");
+                                }
+
+                                while (buffer.TryGet(ref position, out var memory))
+                                {
+                                    var isCompletedFlag = false;
+                                    foreach (var resultTask in Pipes.Select(p => p.SystemPipe.WriteAsync(memory, ctx)))
+                                    {
+                                        FlushResult flushResult = await resultTask.ConfigureAwait(false);
+                                        if (flushResult.IsCanceled)
+                                        {
+                                            throw new OperationCanceledException("Flush of pipeline has been cancelled");
+                                        }
+
+                                        if (flushResult.IsCompleted)
+                                        {
+                                            Debug.Fail("No idea when this happens");
+                                            isCompletedFlag = true;
+                                        }
+                                    }
+
+                                    consumed = position;
+
+                                    if (isCompletedFlag)
+                                    {
+                                        return;
+                                    }
+                                }
+
+                                // The while loop completed successfully, so we've consumed the entire buffer.
+                                consumed = buffer.End;
+
+                                if (result.IsCompleted)
+                                {
+                                    break;
+                                }
+                            }
+                            finally
+                            {
+                                // Advance even if WriteAsync throws so the PipeReader is not left in the
+                                // currently reading state
+                                reader.AdvanceTo(consumed);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        await reader.CompleteAsync().ConfigureAwait(false);
+                    }
+
+                    await Task.WhenAll(workLoops).ConfigureAwait(false);
+                };
+            }
+        }
+    }
+}
+
+
+internal abstract record InputPipe
+{
+    private InputPipe(){}
+    internal abstract System.IO.Pipelines.PipeReader SystemPipe { get; }
+    internal abstract Func<CancellationToken, Task> WorkLoop { get; }
+
+    internal record SimplePipe(System.IO.Pipelines.PipeReader SystemPipe, Func<CancellationToken, Task> WorkLoop) : InputPipe
+    {
+        internal override System.IO.Pipelines.PipeReader SystemPipe { get; } = SystemPipe;
+        internal override Func<CancellationToken, Task> WorkLoop { get; } = WorkLoop;
+    }
+    
+}
 
 /// <summary>
 /// Various options to redirect streams.
 /// </summary>
-public record StreamSpecification
+internal record OutputStreamSpecification
 {
-    private StreamSpecification(){}
+    public bool IsInherit { get; }
+    private OutputStreamSpecification(bool isInherit)
+    {
+        this.IsInherit = IsInherit;
+    }
 
     /// <summary>
     /// Do not redirect, or use normal process inheritance
     /// </summary>
-    public record Inherit() : StreamSpecification;
+    public record Inherit() : OutputStreamSpecification(true);
 
     /// <summary>
     /// Redirect to the given Pipe
     /// </summary>
-    public record UsePipe(Pipe Pipe) : StreamSpecification;
+    public record UsePipe(OutputPipe Pipe) : OutputStreamSpecification(false);
 }
 
-internal record StreamSpecs(StreamSpecification StandardInput, StreamSpecification StandardOutput,
-    StreamSpecification StandardError)
+/// <summary>
+/// Various options to redirect streams.
+/// </summary>
+internal record InputStreamSpecification
+{
+    public bool IsInherit { get; }
+    
+    private InputStreamSpecification(bool isInherit)
+    {
+        this.IsInherit = IsInherit;
+    }
+
+    /// <summary>
+    /// Do not redirect, or use normal process inheritance
+    /// </summary>
+    public record Inherit() : InputStreamSpecification(true);
+
+    /// <summary>
+    /// Redirect to the given Pipe
+    /// </summary>
+    public record UsePipe(InputPipe Pipe) : InputStreamSpecification(false);
+}
+
+internal record StreamSpecs(InputStreamSpecification StandardInput, OutputStreamSpecification StandardOutput,
+    OutputStreamSpecification StandardError)
 {
     public void SetStartInfo(ProcessStartInfo p)
     {
-        bool IsInherit(StreamSpecification s) => s switch
-        {
-            StreamSpecification.Inherit => true,
-            StreamSpecification.UsePipe => false,
-            _ => throw new ArgumentOutOfRangeException(nameof(s), s, null)
-        };
-
-        p.RedirectStandardInput = !IsInherit(StandardInput);
-        p.RedirectStandardOutput = !IsInherit(StandardOutput);
-        p.RedirectStandardError = !IsInherit(StandardError);
+        p.RedirectStandardInput = !StandardInput.IsInherit;
+        p.RedirectStandardOutput = !StandardOutput.IsInherit;
+        p.RedirectStandardError = !StandardError.IsInherit;
     }
-}
-
-internal interface IRawProcessHook
-{
-    StreamSpecs Prepare(StreamSpecs specs);
-    void OnStart(System.Diagnostics.Process process);
 }
 
 internal record RawCreateProcess(
     Command Command, bool TraceCommand, string? WorkingDirectory,
-    EnvMap? Environment, StreamSpecs Streams,
-    IRawProcessHook OutputHook)
+    EnvMap? Environment, StreamSpecs Streams)
 {
     internal ProcessStartInfo StartInfo
     {
@@ -281,17 +431,11 @@ public record RawProcessResult(int RawExitCode);
 
 internal interface IProcessStarter
 {
-    Task<Task<RawProcessResult>> Start(RawCreateProcess createProcess);
+    Task<RawProcessResult> Start(RawCreateProcess createProcess);
 }
 
 internal static class RawProc
 {
-    private static bool SetEcho(bool b)
-    {
-        // https://github.com/fsprojects/FAKE/blob/release/next/src/app/Fake.Core.Process/RawProc.fs#L170
-        return false;
-    }
-
     internal class CreateProcessStarter : IProcessStarter
     {
         private readonly Action<RawCreateProcess, System.Diagnostics.Process> _startProcessRaw;
@@ -301,13 +445,12 @@ internal static class RawProc
             _startProcessRaw = startProcessRaw;
         }
 
-        public async Task<Task<RawProcessResult>> Start(RawCreateProcess createProcess)
+        public Task<RawProcessResult> Start(RawCreateProcess createProcess)
         {
             var p = createProcess.StartInfo;
-            var streamSpec = createProcess.OutputHook.Prepare(createProcess.Streams);
             var toolProcess = new System.Diagnostics.Process() { StartInfo = p };
             var isStarted = false;
-            var startTrigger = new System.Threading.Tasks.TaskCompletionSource<bool>();
+            var streamSpec = createProcess.Streams;
             Task readOutputTask = System.Threading.Tasks.Task.FromResult(Stream.Null);
             Task readErrorTask   = System.Threading.Tasks.Task.FromResult(Stream.Null);
             Task redirectStdInTask  = System.Threading.Tasks.Task.FromResult(Stream.Null);
@@ -318,88 +461,79 @@ internal static class RawProc
                 Observable.FromEventPattern(
                     handler => toolProcess.Exited += handler,
                     handler => toolProcess.Exited -= handler).FirstAsync().ToTask();
-            try
+
+            if (!isStarted)
             {
-                if (!isStarted)
+                toolProcess.EnableRaisingEvents = true;
+                
+                _startProcessRaw(createProcess, toolProcess);
+               
+
+                async Task HandleUseOutputPipe(OutputStreamSpecification.UsePipe usePipe, Stream processStream)
                 {
-                    toolProcess.EnableRaisingEvents = true;
-                    SetEcho(true);
-                    
-                    try
+                    var workTask = usePipe.Pipe.WorkLoop(tok.Token);
+                    var writer = usePipe.Pipe.SystemPipe; // Why is there no CopyFromAsync Helper?
+                    int read;
+                    do
                     {
-                        _startProcessRaw(createProcess, toolProcess);
-                    }
-                    finally
+                        Memory<byte> memory = writer.GetMemory(81920);
+                        read = await processStream.ReadAsync(memory, tok.Token);
+                        writer.Advance(read);
+                        await writer.FlushAsync(tok.Token);
+                    } while (read > 0);
+                    await workTask;
+                }
+                
+                async Task HandleUseInputPipe(InputStreamSpecification.UsePipe usePipe, Stream processStream)
+                {
+                    var workTask = usePipe.Pipe.WorkLoop(tok.Token);
+                    await usePipe.Pipe.SystemPipe.CopyToAsync(processStream, tok.Token);
+                    await workTask;
+                    processStream.Close();
+                }
+                
+                async Task HandleInputStream(InputStreamSpecification parameter, Stream processStream)
+                {
+                    switch (parameter)
                     {
-                        SetEcho(false);
-                    }
-                    createProcess.OutputHook.OnStart(toolProcess);
-
-                    async Task HandleUsePipe(StreamSpecification.UsePipe usePipe, Stream processStream, bool isInputStream)
-                    {
-                        if (isInputStream)
-                        {
-                            var workTask = usePipe.Pipe.WorkLoop(tok.Token);
-                            await usePipe.Pipe.SystemPipe.Reader.CopyToAsync(processStream, tok.Token);
-                            await workTask;
-                            processStream.Close();
-                        }
-                        else
-                        {
-                            var workTask = usePipe.Pipe.WorkLoop(tok.Token);
-                            var writer = usePipe.Pipe.SystemPipe.Writer; // Why is there no CopyFromAsync Helper?
-                            int read;
-                            do
-                            {
-                                Memory<byte> memory = writer.GetMemory(81920);
-                                read = await processStream.ReadAsync(memory, tok.Token);
-                                writer.Advance(read);
-                                await writer.FlushAsync(tok.Token);
-                            } while (read > 0);
-                            await workTask;
-                        }
-                    }
-                    
-                    
-                    async Task HandleStream(StreamSpecification originalParameter, StreamSpecification parameter, Stream processStream, bool isInputStream)
-                    {
-                        switch (parameter)
-                        {
-                            case StreamSpecification.Inherit:
-                                throw new InvalidOperationException("Unexpected value");
-                            case StreamSpecification.UsePipe usePipe:
-                                await HandleUsePipe(usePipe, processStream, isInputStream);
-                                break;
-                            default:
-                                throw new ArgumentOutOfRangeException(nameof(parameter), parameter, null);
-                        }
-                    }
-
-                    if (p.RedirectStandardInput)
-                    {
-                        redirectStdInTask = HandleStream(createProcess.Streams.StandardInput, streamSpec.StandardInput,
-                            toolProcess.StandardInput.BaseStream, true);
-                    }
-                    if (p.RedirectStandardOutput)
-                    {
-                        readOutputTask = HandleStream(createProcess.Streams.StandardOutput, streamSpec.StandardOutput,
-                            toolProcess.StandardOutput.BaseStream, false);
-                    }
-                    if (p.RedirectStandardError)
-                    {
-                        readErrorTask = HandleStream(createProcess.Streams.StandardError, streamSpec.StandardError,
-                            toolProcess.StandardError.BaseStream, false);
+                        case InputStreamSpecification.Inherit:
+                            throw new InvalidOperationException("Unexpected value");
+                        case InputStreamSpecification.UsePipe usePipe:
+                            await HandleUseInputPipe(usePipe, processStream);
+                            break;
+                        default:
+                            throw new ArgumentOutOfRangeException(nameof(parameter), parameter, null);
                     }
                 }
 
-                startTrigger.SetResult(true);
-            }
-            catch (Exception e1)
-            {
-                startTrigger.SetException(e1);
+                async Task HandleOutputStream(OutputStreamSpecification parameter, Stream processStream)
+                {
+                    switch (parameter)
+                    {
+                        case OutputStreamSpecification.Inherit:
+                            throw new InvalidOperationException("Unexpected value");
+                        case OutputStreamSpecification.UsePipe usePipe:
+                            await HandleUseOutputPipe(usePipe, processStream);
+                            break;
+                        default:
+                            throw new ArgumentOutOfRangeException(nameof(parameter), parameter, null);
+                    }
+                }
+
+                if (p.RedirectStandardInput)
+                {
+                    redirectStdInTask = HandleInputStream(streamSpec.StandardInput, toolProcess.StandardInput.BaseStream);
+                }
+                if (p.RedirectStandardOutput)
+                {
+                    readOutputTask = HandleOutputStream(streamSpec.StandardOutput, toolProcess.StandardOutput.BaseStream);
+                }
+                if (p.RedirectStandardError)
+                {
+                    readErrorTask = HandleOutputStream(streamSpec.StandardError, toolProcess.StandardError.BaseStream);
+                }
             }
 
-            await startTrigger.Task;
             return Task.Run(async () =>
             {
                 await exitEvent;
@@ -438,7 +572,6 @@ internal static class RawProc
                 }
                 
                 // wait for finish.
-                // workaround with continuewith
                 if (!allFinished)
                 {
                     if (System.Environment.GetEnvironmentVariable("PROC_ATTACH_DEBUGGER") == "true")

@@ -29,7 +29,7 @@ public class Tests
     public void RedirectToFileAndPipeToCat()
     {
         var shell = new ProcessShell();
-        var result = shell.Run(
+        shell.Run(
             CreateProcess.FromCommandLine("echo", "test single argument")
             > Redirect.ToFile("test.txt")
             | CreateProcess.FromCommandLine("cat")
@@ -45,7 +45,7 @@ public class Tests
             CreateProcess.FromCommandLine("echo", "test single argument")
             > Redirect.ToFile("test.txt")
             | CreateProcess.FromCommandLine("cat")
-            > Redirect.
+            > Redirect.ToFile("something")
         );
         Assert.AreEqual("test single argument", File.ReadAllText("test.txt"));
     }
