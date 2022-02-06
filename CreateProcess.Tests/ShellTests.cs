@@ -1,6 +1,7 @@
 using System.IO;
 using System.Net.NetworkInformation;
 using System.Reactive;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using CreateProcess;
@@ -17,7 +18,7 @@ public class Tests
     [Test]
     public void RedirectToFile()
     {
-        var shell = new ProcessShell();
+        var shell = ProcessShell.Create();
         shell.Run(
             CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "echo test single argument")
             > Redirect.Output.ToFile("test.txt", true)
@@ -30,7 +31,7 @@ public class Tests
     [Test]
     public void RedirectFromFileAndPipeToCat()
     {
-        var shell = new ProcessShell();
+        var shell = ProcessShell.Create();
         File.WriteAllTextAsync("test.txt", "RedirectFromFileAndPipeToCat");
         shell.AppendPath(@"C:\Program Files\Git\usr\bin");
         shell.Run(
@@ -44,7 +45,7 @@ public class Tests
     [Test]
     public void RedirectMultipleFilesAndPipeToCat()
     {
-        var shell = new ProcessShell();
+        var shell = ProcessShell.Create();
         File.WriteAllTextAsync("test.txt", "RedirectFromFileAndPipeToCat");
         File.WriteAllTextAsync("test2.txt", "SecondFile");
         shell.AppendPath(@"C:\Program Files\Git\usr\bin");
@@ -60,7 +61,7 @@ public class Tests
     [Test]
     public void RedirectToFileAndPipeToCat()
     {
-        var shell = new ProcessShell();
+        var shell = ProcessShell.Create();
         shell.AppendPath(@"C:\Program Files\Git\usr\bin");
         shell.Run(
             CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "echo test single argument")
@@ -75,7 +76,7 @@ public class Tests
     [Test]
     public void RedirectToFileAndPipeToCatCheckAllExitCodes()
     {
-        var shell = new ProcessShell();
+        var shell = ProcessShell.Create();
         shell.AppendPath(@"C:\Program Files\Git\usr\bin");
         shell.Run(
             CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "echo test single argument")
@@ -118,7 +119,7 @@ public class Tests
     [Test]
     public void ExitCodeThrows()
     {
-        var shell = new ProcessShell();
+        var shell = ProcessShell.Create();
         Assert.ThrowsAsync<ProcessErroredException>(() =>
             shell.RunAsync(
                 CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "exit 1")
@@ -129,7 +130,7 @@ public class Tests
     [Test]
     public async Task ExitCodeCheckCanBeDisabled()
     {
-        var shell = new ProcessShell();
+        var shell = ProcessShell.Create();
         var r = await shell.RunAsync(
             (CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "exit 1")
             > Redirect.Output.ToFile("test.txt", true))
@@ -144,7 +145,7 @@ public class Tests
     [Test]
     public void ExitCodeThrowsWhenCheckedForAnyValue()
     {
-        var shell = new ProcessShell();
+        var shell = ProcessShell.Create();
         Assert.ThrowsAsync<ProcessErroredException>(() =>
             shell.RunAsync(
                 CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "exit 2")
@@ -155,11 +156,28 @@ public class Tests
     [Test]
     public async Task ExitCodeCanBeCheckedForAnyValue()
     {
-        var shell = new ProcessShell();
+        var shell = ProcessShell.Create();
         await shell.RunAsync(
             CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "exit 2")
             > Redirect.Output.ToFile("test.txt", true)
             == 2
         );
+    }
+    
+    [Test]
+    public async Task PipeToMemory()
+    {
+        var pipe = CreateProcessPipe.Create();
+        var readerTask = pipe.ToStringAsync();
+        var shell = ProcessShell.Create();
+        await shell.RunAsync(
+            CreateProcess.FromCommandLine(@"C:\Program Files\Git\usr\bin\bash.exe", "-c", "echo test")
+            > Redirect.Output.ToPipe(pipe)
+            == 0
+        );
+        
+        var data = await readerTask;
+        
+        Assert.AreEqual("test\n", data);
     }
 }

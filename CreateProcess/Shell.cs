@@ -189,6 +189,13 @@ public class ProcessShell
     public string? WorkingDirectory { get; set; }
     public bool DefaultTrace { get; set; }
 
+    private ProcessShell()
+    {
+        
+    }
+
+    public static ProcessShell Create() => new ProcessShell();
+    
     private IProcessStarter Starter
     {
         get

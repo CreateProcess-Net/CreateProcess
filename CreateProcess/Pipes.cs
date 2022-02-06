@@ -144,6 +144,187 @@ internal static class PipeUtils
     }
 }
 
+public class CreateProcessPipe
+{
+    internal Pipe _pipe = new Pipe();
+
+    private int _toSet;
+    private int _fromSet;
+    
+    private CreateProcessPipe()
+    {
+        
+    }
+
+    public static CreateProcessPipe Create() => new CreateProcessPipe();
+    
+    public ValueTask FromComplete()
+    {
+        return _pipe.Writer.CompleteAsync();
+    }
+    
+    public void Reset()
+    {
+        _pipe.Reset();
+        _toSet = 0;
+        _fromSet = 0;
+    }
+
+    public async Task FromStreamAsync(Stream stream, CancellationToken tok, bool leaveOpen = false)
+    {
+        EnsureSingleFrom();
+        try
+        {
+            await _pipe.Writer.CopyFromAsync(stream, tok).ConfigureAwait(false);
+        }
+        finally
+        {
+            await ReleaseFrom(leaveOpen).ConfigureAwait(false);
+        }
+    }
+    
+    public async Task FromPipeAsync(PipeReader reader, CancellationToken tok, bool leaveOpen = false)
+    {
+        EnsureSingleFrom();
+        try
+        {
+            await reader.CopyToAsync(_pipe.Writer, tok).ConfigureAwait(false);
+        }
+        finally
+        {
+            await ReleaseFrom(leaveOpen).ConfigureAwait(false);
+        }
+    }
+    
+    public Task FromPipeAsync(CreateProcessPipe pipe, CancellationToken tok, bool leaveOpen = false)
+    {
+        return pipe.ToPipeAsync(this, tok, leaveOpen);
+    }
+    
+    public async Task FromFileAsync(string fileName, CancellationToken tok, bool leaveOpen = false)
+    {
+        await using var file = File.OpenRead(fileName);
+        await FromStreamAsync(file, tok, leaveOpen).ConfigureAwait(false);
+    }
+
+    public async Task ToStreamAsync(Stream stream, CancellationToken tok)
+    {
+        EnsureSingleTo();
+        await _pipe.Reader.CopyToAsync(stream, tok).ConfigureAwait(false);
+        await _pipe.Reader.CompleteAsync().ConfigureAwait(false);
+    }
+
+
+    internal void EnsureSingleFrom()
+    {
+        var old = Interlocked.CompareExchange(ref _fromSet, 1, 0);
+        if (old != 0)
+        {
+            throw new InvalidOperationException("You can only use a single From-Call, please call From methods one after another and set 'leaveOpen' to true.");
+        }
+    }
+    
+    internal async Task ReleaseFrom(bool leaveOpen)
+    {
+        if (!leaveOpen)
+        {
+            await FromComplete().ConfigureAwait(false);
+            return; // Do not allow next from call
+        }
+        
+        var old = Interlocked.CompareExchange(ref _fromSet, 0, 1);
+        if (old != 1)
+        {
+            throw new InvalidOperationException("Unexpected value in _fromSet.");
+        }
+    }
+    
+    internal void EnsureSingleTo()
+    {
+        var old = Interlocked.CompareExchange(ref _toSet, 1, 0);
+        if (old != 0)
+        {
+            throw new InvalidOperationException("You can only use a single To-Call, You can create multiple pipes and use ToMany() if needed.");
+        }
+    }
+
+    public Stream ToAsStream()
+    {
+        EnsureSingleTo();
+        return _pipe.Reader.AsStream();
+    }
+    
+    public Stream FromAsStream(bool leaveOpen = false)
+    {
+        EnsureSingleFrom();
+        return _pipe.Writer.AsStream(leaveOpen);
+    }
+    
+    public async Task<string> ToStringAsync()
+    {
+        await using var mem = ToAsStream();
+        using var reader = new StreamReader(mem);
+        var data =  await reader.ReadToEndAsync().ConfigureAwait(false);
+        
+        return data;
+    }
+    
+    public async Task ToPipeAsync(PipeWriter writer, CancellationToken tok)
+    {
+        EnsureSingleTo();
+        await _pipe.Reader.CopyToAsync(writer, tok).ConfigureAwait(false);
+        await _pipe.Reader.CompleteAsync().ConfigureAwait(false);
+    }
+    
+    public async Task ToMany(IReadOnlyList<PipeWriter> writer, CancellationToken tok)
+    {
+        EnsureSingleTo();
+        await _pipe.Reader.CopyToManyAsync(writer, tok).ConfigureAwait(false);
+        await _pipe.Reader.CompleteAsync().ConfigureAwait(false);
+    }
+    
+    public async Task ToMany(IReadOnlyList<CreateProcessPipe> pipes, CancellationToken tok, bool leaveOpen = false)
+    {
+        foreach (var createProcessPipe in pipes)
+        {
+            createProcessPipe.EnsureSingleFrom();
+        }
+        try
+        {
+            var writer = pipes.Select(p => p._pipe.Writer).ToList();
+            await ToMany(writer, tok).ConfigureAwait(false);
+        }
+        finally
+        {
+            foreach (var createProcessPipe in pipes)
+            {
+                await createProcessPipe.ReleaseFrom(leaveOpen).ConfigureAwait(false);
+            }
+        }
+    }
+
+    public async Task ToPipeAsync(CreateProcessPipe pipe, CancellationToken tok, bool leaveOpen = false)
+    {
+        EnsureSingleTo();
+        pipe.EnsureSingleFrom();
+        try
+        {
+            await _pipe.Reader.CopyToAsync(pipe._pipe.Writer, tok).ConfigureAwait(false);
+            await _pipe.Reader.CompleteAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            await pipe.ReleaseFrom(leaveOpen).ConfigureAwait(false);
+        }
+    }
+
+    public async Task ToFileAsync(string fileName, CancellationToken tok, bool truncate = false)
+    {
+        await using var file = truncate ? File.Open(fileName, FileMode.Create) : File.OpenWrite(fileName);
+        await ToStreamAsync(file, tok).ConfigureAwait(false);
+    }
+}
+
 internal abstract record OutputPipe
 {
     private readonly string _debugName;

@@ -60,6 +60,7 @@ public record OutputRedirectSpecification
     }
     
     internal record ToFile(RedirectStream Stream, string FileName, bool Truncate) : OutputRedirectSpecification(Stream);
+    internal record ToPipe(RedirectStream Stream, CreateProcessPipe Pipe, bool LeaveOpen) : OutputRedirectSpecification(Stream);
     internal record ToProcessStream(RedirectStream Source, RedirectStream Target) : OutputRedirectSpecification(Source);
     internal record ToConsole(RedirectStream Source, RedirectStream Target) : OutputRedirectSpecification(Source);
 }
@@ -69,7 +70,7 @@ public record InputRedirectSpecification
     private InputRedirectSpecification(){}
     
     internal record FromFile(string FileName) : InputRedirectSpecification;
-    internal record FromPipe(PipeReader reader) : InputRedirectSpecification;
+    internal record FromPipe(CreateProcessPipe Pipe) : InputRedirectSpecification;
 }
 
 
@@ -85,6 +86,11 @@ public record Redirect
     public OutputRedirectSpecification ToFile(string file, bool truncate = false)
     {
         return new OutputRedirectSpecification.ToFile(Stream, file, truncate);
+    }
+    
+    public OutputRedirectSpecification ToPipe(CreateProcessPipe pipe, bool leaveOpen = false)
+    {
+        return new OutputRedirectSpecification.ToPipe(Stream, pipe, leaveOpen);
     }
 
     internal OutputRedirectSpecification ToStandardOutput
@@ -137,6 +143,11 @@ public record Redirect
     public static InputRedirectSpecification FromFile(string filePath)
     {
         return new InputRedirectSpecification.FromFile(filePath);
+    }
+    
+    public static InputRedirectSpecification FromPipe(CreateProcessPipe pipe)
+    {
+        return new InputRedirectSpecification.FromPipe(pipe);
     }
 }
 
@@ -487,7 +498,8 @@ public static class CreateProcessExtensions
 
     public static CreateProcess AddRedirect(this CreateProcess createProcess, OutputRedirectSpecification spec)
     {
-        System.IO.Pipelines.Pipe pipe;
+        //System.IO.Pipelines.Pipe pipe;
+        CreateProcessPipe pipe = CreateProcessPipe.Create();
         Func<CancellationToken, Task> workTask;
         var debugName = "ToUnknown";
         switch (spec)
@@ -497,22 +509,20 @@ public static class CreateProcessExtensions
                 switch (toConsole.Target)
                 {
                     case RedirectStream.StandardOutput:
-                        pipe = new System.IO.Pipelines.Pipe();
-                        workTask = async (CancellationToken tok) =>
+                        workTask = async tok =>
                         {
                             var stdOut = System.Console.OpenStandardOutput();
-                            await pipe.Reader.CopyToAsync(stdOut, tok).ConfigureAwait(false);
-                            await pipe.Reader.CompleteAsync().ConfigureAwait(false);
+                            await pipe.ToStreamAsync(stdOut, tok).ConfigureAwait(false);
+                            
                             pipe.Reset();
                         };
                         break;
                     case RedirectStream.StandardError:
-                        pipe = new System.IO.Pipelines.Pipe();
-                        workTask = async (CancellationToken tok) =>
+                        workTask = async tok =>
                         {
-                            var stdOut = System.Console.OpenStandardOutput();
-                            await pipe.Reader.CopyToAsync(stdOut, tok).ConfigureAwait(false);
-                            await pipe.Reader.CompleteAsync().ConfigureAwait(false);
+                            var stdErr = System.Console.OpenStandardError();
+                            await pipe.ToStreamAsync(stdErr, tok).ConfigureAwait(false);
+                            
                             pipe.Reset();
                         };
                         break;
@@ -522,12 +532,26 @@ public static class CreateProcessExtensions
                 break;
             case OutputRedirectSpecification.ToFile toFile:
                 debugName = "ToFile";
-                pipe = new System.IO.Pipelines.Pipe();
-                workTask = async (CancellationToken tok) =>
+                workTask = async tok =>
                 {
-                    await using var file = toFile.Truncate ? File.Open(toFile.FileName, FileMode.Create) : File.OpenWrite(toFile.FileName);
-                    await pipe.Reader.CopyToAsync(file, tok).ConfigureAwait(false);
-                    await pipe.Reader.CompleteAsync().ConfigureAwait(false);
+                    await pipe.ToFileAsync(toFile.FileName, tok, toFile.Truncate).ConfigureAwait(false);
+                    
+                    pipe.Reset();
+                };
+                break;
+            case OutputRedirectSpecification.ToPipe toPipe:
+                debugName = "ToPipe";
+                
+                workTask = async tok =>
+                {
+                    // We have two pipes on order to prevent the 'complete' call for a user pipe
+                    
+                    await pipe.ToPipeAsync(toPipe.Pipe, tok, toPipe.LeaveOpen).ConfigureAwait(false);
+
+                    if (!toPipe.LeaveOpen)
+                    {
+                        await toPipe.Pipe.FromComplete().ConfigureAwait(false);
+                    }
                     
                     pipe.Reset();
                 };
@@ -535,14 +559,13 @@ public static class CreateProcessExtensions
             case OutputRedirectSpecification.ToProcessStream toProcessStream:
                 debugName = "ToProcessStream";
                 throw new NotImplementedException("Need to find a good design for this");
-                pipe = new System.IO.Pipelines.Pipe();
                 switch (toProcessStream.Target)
                 {
                     case RedirectStream.StandardOutput:
                         Func<CancellationToken, Task> writeTask = async (tok) =>
                         {
                         };
-                        createProcess = createProcess.RedirectOutputTo(pipe.Writer, writeTask, "");
+                        createProcess = createProcess.RedirectOutputTo(pipe._pipe.Writer, writeTask, "");
                         break;
                     case RedirectStream.StandardError:
                         break;
@@ -554,7 +577,7 @@ public static class CreateProcessExtensions
                 workTask = async (CancellationToken tok) =>
                 {
                     var stdOut = System.Console.OpenStandardOutput();
-                    await pipe.Reader.CopyToAsync(stdOut, tok).ConfigureAwait(false);
+                    await pipe._pipe.Reader.CopyToAsync(stdOut, tok).ConfigureAwait(false);
                 };
                 break;
             default:
@@ -564,9 +587,9 @@ public static class CreateProcessExtensions
         switch (spec.Stream)
         {
             case RedirectStream.StandardOutput:
-                return createProcess.RedirectOutputTo(pipe.Writer, workTask, "Output" + debugName);
+                return createProcess.RedirectOutputTo(pipe._pipe.Writer, workTask, "Output" + debugName);
             case RedirectStream.StandardError:
-                return createProcess.RedirectErrorTo(pipe.Writer, workTask, "Error" + debugName);
+                return createProcess.RedirectErrorTo(pipe._pipe.Writer, workTask, "Error" + debugName);
             default:
                 throw new ArgumentOutOfRangeException();
         }
@@ -574,39 +597,53 @@ public static class CreateProcessExtensions
     
     public static CreateProcess AddRedirect(this CreateProcess createProcess, InputRedirectSpecification spec)
     {
-        System.IO.Pipelines.Pipe pipe;
+        CreateProcessPipe pipe = CreateProcessPipe.Create();
         Func<Task, CancellationToken, Task> workTask;
         var debugName = "FromUnknown";
         switch (spec)
         {
             case InputRedirectSpecification.FromFile fromFile:
                 debugName = "FromFile";
-                pipe = new System.IO.Pipelines.Pipe();
                 workTask = async (readComplete, tok) =>
                 {
-                    await using var file = File.OpenRead(fromFile.FileName);
-                    await pipe.Writer.CopyFromAsync(file, tok).ConfigureAwait(false);
-                    await pipe.Writer.CompleteAsync().ConfigureAwait(false);
+                    await pipe.FromFileAsync(fromFile.FileName, tok, false).ConfigureAwait(false);
                     
                     await readComplete.ConfigureAwait(false);
                     pipe.Reset();
                 };
                 break;
+            
+            case InputRedirectSpecification.FromPipe fromPipe:
+                debugName = "FromPipe";
+                pipe = fromPipe.Pipe;
+                workTask = async (readComplete, tok) =>
+                {
+                    fromPipe.Pipe.EnsureSingleTo();
+                    await readComplete.ConfigureAwait(false);
+                    
+                };
+                //workTask = async (readComplete, tok) =>
+                //{
+                //    // We have two pipes on order to prevent the 'reset' call for a user pipe
+                //    await pipe.FromPipeAsync(fromPipe.Pipe, tok).ConfigureAwait(false);
+                //    await pipe.FromComplete().ConfigureAwait(false);
+                //    
+                //    await readComplete.ConfigureAwait(false);
+                //    pipe.Reset();
+                //};
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(spec));
         }
         
-        return createProcess.RedirectInputFrom(pipe.Reader, workTask, "Input" + debugName);
+        return createProcess.RedirectInputFrom(pipe._pipe.Reader, workTask, "Input" + debugName);
     }
     
     // TODO: Rework design
     internal static CreateProcess AddRedirect(this CreateProcess createProcess, ref CreateProcess target)
     {
         System.IO.Pipelines.Pipe pipe = new System.IO.Pipelines.Pipe();
-        Func<CancellationToken, Task> outputWorkTask = async (tok) =>
-        {
-
-        };
+        Func<CancellationToken, Task> outputWorkTask = (tok) => Task.CompletedTask;
         Func<Task, CancellationToken, Task> inputWorkTask = async (readComplete, tok) =>
         {
             await readComplete;
