@@ -1,5 +1,9 @@
 ﻿# Release Notes
 
+## 0.2.1 - 2022-02-08
+
+- Fix an issue with command line parsing.
+
 ## 0.2.0 - 2022-02-06
 
 - Add CreateProcessPipe API.

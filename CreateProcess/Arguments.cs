@@ -19,6 +19,7 @@ internal static class CmdLineParsing
         for (var i = lastSearchIndex; i >= 0; i--)
             if (s[i] == '\\')
                 countSlashes++;
+            else break;
         if (countSlashes > 0) sb.Append('\\', countSlashes);
     }
 
